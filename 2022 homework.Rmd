@@ -1,0 +1,315 @@
+---
+title: "Rethinking statistics 2022 homework"
+author: "Derek Murphy"
+date: "02/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(rethinking)
+library(knitr)
+
+```
+
+## Statistical Rethinking 2022
+
+Homework for Richard McElreath's Statistical Rethinking 2022 course.
+Lectures available on youtube [here](https://www.youtube.com/watch?v=cclUd_HoRlo&list=PLDcUM9US4XdMROZ57-OIRtIK0aOynbgZN) and homework and other resources available on github [here](https://github.com/rmcelreath/stat_rethinking_2022)
+
+
+## Week 1 homework
+Covering chapters 1, 2 and 3 of the book.
+
+### Q1
+Suppose the globe tossing data (Chapter 2) had turned out to be 4 water
+and 11 land. Construct the posterior distribution, using grid approximation.
+Use the same flat prior as in the book.
+
+```{r w1.1}
+#set variables
+W <- 4
+L <- 11
+
+#define grid
+pgrid <- seq(0, 1, length.out = 1000)
+
+#define flat prior
+prior <- rep(1, 20)
+
+#calculate likelihood at each level of probability in the grid
+likelihood <- dbinom(W, size = W+L, prob = pgrid)
+
+#calculate product of likelihood and prior
+unstd.posterior <- prior * likelihood
+
+#standardise the posterior so it sums to 1
+posterior <- unstd.posterior/sum(unstd.posterior)
+
+#plot the posterior
+plot(pgrid, posterior, type = 'l', xlab = "Proportion of water", ylab = "Posterior probability")
+```
+
+### Q2 
+Now suppose the data are 4 water and 2 land. Compute the posterior
+again, but this time use a prior that is zero below p = 0.5 and a constant
+above p = 0.5. This corresponds to prior information that a majority of the
+Earth’s surface is water.
+
+```{r w1.2}
+W <- 4
+L <- 2
+
+pgrid <- seq(0, 1, length.out = 1000)
+
+prior <- ifelse(pgrid <= 0.5, 0, 1)
+
+likelihood <- dbinom(W, size = W+L, prob = pgrid)
+
+unstd.posterior <- prior*likelihood
+
+posterior <- unstd.posterior/sum(unstd.posterior)
+
+
+plot(pgrid, posterior, type = 'l', xlab = "proportion of water", ylab = "posterior probability")
+```
+
+### Q3
+For the posterior distribution from 2, compute 89% percentile and HPDI (Highest Posterior Density Interval)
+intervals. Compare the widths of these intervals. 
+
+```{r w1.3}
+#Compute the intervals based on samples from the posterior
+set.seed(100)
+samps <- sample(pgrid, size = 1e4, replace = TRUE, prob = posterior)
+
+pi89  <- rethinking::PI(samps, prob = 0.89) #same as: quantile(samps, probs = c(0.055, 0.945))
+hpdi<-rethinking::HPDI(samps)
+
+pi89 #89% percentile
+
+hpdi #HPDI (89%)
+
+```
+
+Which is wider?  
+*the 89% quantile (`r pi89[[1]]` - `r pi89[[2]]`) is wider than the HPDI (`r hpdi[[1]]` - `r hpdi[[2]]`)*
+
+Why?  
+*Because the HPDI is the narrowest interval containing the 89% probability mass. It can differ a lot from the 89% quantile if the posterior distribution is skewed, but in this case they are not very different.*
+
+If you had only the information in the interval, what might you misunderstand
+about the shape of the posterior distribution?  
+*You might assume that there is some probability that the model assigns to a world with <50% water coverage, when in fact the posterior distribution gives no probability of a world with <50% water coverage.*
+
+
+
+### Q4. OPTIONAL CHALLENGE. 
+Suppose there is bias in sampling so that Land
+is more likely than Water to be recorded. Specifically, assume that 1-in-5
+(20%) of Water samples are accidentally recorded instead as ”Land”. First,
+write a generative simulation of this sampling process. Assuming the true
+proportion of Water is 0.70, what proportion does your simulation tend to
+produce instead? 
+
+```{r w1.4}
+
+#first write a function that returns 1 for observing water and 0 for land
+globe_toss <- function(n_toss = 100, prob_w = 0.7){
+  x <- rbinom(n_toss, 1, prob_w)
+  x <- replace(x, x==1, rbinom(length(x[x==1]), 1, 0.8))
+
+  return(x)
+}
+
+
+#The simulation produces the following proportion of water:
+set.seed(100)
+sum(globe_toss(n_toss = 1e4))/1e4
+
+```
+
+Second, using a simulated sample of 20 tosses, compute
+the unbiased posterior distribution of the true proportion of water.  
+*I presume we know what the sampling bias is in this example?*
+
+```{r w4.1.2}
+set.seed(100)
+tosses <- globe_toss(n_toss = 20)
+
+pgrid <- seq(0, 1, length.out = 100)
+
+prior <- rep(1, 20)
+
+#To get the unbiased likelihood, multiply pgrid by 0.8 
+#because we know true probability of finding water is 0.7(ground truth) * 0.8(sampling bias)
+likelihood <- dbinom(sum(tosses), size = length(tosses), prob = pgrid*0.8) 
+
+unstd.posterior <- prior*likelihood
+
+posterior <- unstd.posterior/sum(unstd.posterior)
+
+plot(pgrid, posterior, type = 'l', xlab = "proportion of water", ylab = 'posterior probability')
+
+```
+
+Can you figure out that simulation and model as well, in which both
+water and land have chances of being misclassified?
+
+**_the following isn't right, but I can't figure it out :(_**
+
+```{r w1.4.3}
+#let's say land has a 10% chance of being misclassified as water, 
+#as well as water having a 20% chance of being misclassified as land.
+set.seed(100)
+
+n<-1e3
+
+#the generative simulation applied in the globe_toss function above can be written in one line:
+obs <- rbinom(n, 20, prob = 0.7*0.8)
+#This says the probability of recording an observation of water on any toss is equal to 
+#the true proportion of water (0.7) * the chance of correctly classifying water (0.8).
+# "If the are 0.7 out of 1 ways to sample water and
+# 0.8 out of 1 ways for water to be reported as water, then there must be 0.7 ×
+# 0.8 ways to observe water
+#So in this example, there are 0.7*0.8 ways of classifying water when water is observed, and
+#there are 1-0.7 ways of observing land but 0.1*(1-0.7) ways of classifying land as water, so
+obs <- rbinom(n, 20, prob = (0.7*0.8 + 0.3*0.1)) #?
+
+#The proportion of observed water in this new simulation is:
+mean(obs/20)
+
+#Now to model this in an unbiased way:
+W<-rbinom(1, 20, prob = (0.7*0.8 + 0.1*(1-0.7)))
+pgrid <- seq(0, 1, length.out = 100)
+#prior <- rep(1, 100)
+prior<-dbeta(pgrid, 1, 1)
+likelihood <- dbinom(W, 20, prob = (pgrid*0.8 + 0.1*(1-pgrid)))
+unstd.posterior <- prior*likelihood
+posterior <- unstd.posterior/sum(unstd.posterior)
+
+wrong_likelihood <- dbinom(W, 20, prob = (pgrid*0.8))
+wrong_unstd.posterior <- prior*wrong_likelihood
+wrong_posterior <- wrong_unstd.posterior/sum(wrong_unstd.posterior)
+
+plot(pgrid, posterior, type = 'l', xlab = 'proportion of water', ylab = 'posterior probability')
+lines(pgrid, wrong_posterior, col = "red")
+legend("topleft", c("unbiased", "biased (not accounting for land misclass)"),
+       lty = c(1,1),
+       col = c("black", "red"))
+```
+
+
+*By not accounting for the measurement error that misclassifies land as water 10% of the time, the biased posterior estimate gives greater probability to higher proportions of water than the unbiased posterior*
+
+
+## Week 2 homework
+Covering chapters 4 and 5 of the book.
+
+### Q1
+Construct a linear regression of weight as predicted by height, using the
+adults (age 18 or greater) from the Howell1 dataset. The heights listed below
+were recorded in the !Kung census, but weights were not recorded for these
+individuals. Provide predicted weights and 89% compatibility intervals for
+each of these individuals. That is, fill in the table below, using model-based
+predictions.
+
+```{r q1 table}
+
+individual <- c(1, 2, 3)
+height <- c(140, 160, 175)
+tabledf <- data.frame(individual = individual, height = height, expected_weight = NA)
+
+kable(tabledf)
+```
+
+First, define the model:
+
+```{r w2.1}
+data("Howell1")
+df<-Howell1 %>% filter(age >= 18) %>% mutate(H = standardize(height), W = standardize(weight))
+
+m2.1 <- quap(
+  flist <- alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + b*H,
+    a ~ dnorm(0, 1),
+    b ~ dlnorm(0, 1),
+    sigma ~ dexp(1)
+    ),
+  data = df
+)
+
+```
+
+Next, simulate the prior predictive distribution of regression lines
+
+```{r w2.1.2}
+prior <- extract.prior( m2.1 )
+xseq <- c(-2,2)
+mu <- link( m2.1 , post=prior , data=list(H=xseq) )
+plot( NULL , xlim=xseq , ylim=xseq, xlab = 'std.height', ylab = 'std.weight' )
+for ( i in 1:50 ) lines( xseq , mu[i,] , col=col.alpha("black",0.3) )
+```
+
+There are some unlikely lines, suggesting enormous increases in weight with height, but that should be ok for the model and data.
+
+Now plot the posterior predictive distribution (including the average regression line and 89% compatability interval, and the 89% prediction interval)
+
+```{r w2.1.3}
+# define sequence of weights to compute predictions for
+# these values will be on the horizontal axis
+H.seq <- seq( from=-3 , to=3 , length.out = 100 )
+
+# use link to compute mu
+# for each sample from posterior
+# and for each height in H.seq
+mu <- link( m2.1 , data=data.frame(H=H.seq) )
+
+# summarize the distribution of mu
+mu.mean <- apply( mu , 2 , mean )
+mu.PI <- apply( mu , 2 , PI , prob=0.89 )
+
+#convert standardized weight and height back to natural scale?
+nat.H.seq <- H.seq*sd(df$height) + mean(df$height)
+nat.mu.mean <- mu.mean*sd(df$weight) + mean(df$weight)
+nat.mu.PI <- mu.PI*sd(df$weight) + mean(df$weight)
+
+# plot raw data
+# fading out points to make line and interval more visible
+plot( weight ~ height , data=df , col=col.alpha(rangi2,0.5) )
+
+# plot the quap line, aka the mean mu for each weight
+lines( nat.H.seq , nat.mu.mean )
+
+# plot a shaded region for 89% PI
+shade( nat.mu.PI , nat.H.seq )
+
+# plot the prediction interval (values the model expects)
+sim.W <- sim( m2.1 , data=list(H=H.seq) ) 
+W.PI <- apply( sim.W , 2 , PI , prob=0.89 )
+#convert to natural scale
+nat.W.PI <- W.PI*sd(df$weight) + mean(df$weight)
+
+# draw PI region for simulated heights
+shade( nat.W.PI , nat.H.seq )
+
+
+
+```
+
+Now complete the table
+
+```{r w2.1.4}
+#extract mean and 89% predicted values of the posterior distribution to complete the table:
+#post<-extract.samples(m4h1)
+tabledf <- tabledf %>% mutate(H = (height-mean(df$height))/sd(df$height))
+sim_weight<-sim(m2.1, data = tabledf)
+tabledf$expected_weight<-apply(sim_weight, 2, mean)*sd(df$weight) + mean(df$weight)
+tabledf$lower_interval<-apply(sim_weight, 2, PI, prob = 0.89)[1,]*sd(df$weight) + mean(df$weight)
+tabledf$upper_interval<-apply(sim_weight, 2, PI, prob = 0.89)[2,]*sd(df$weight) + mean(df$weight)
+
+kable(tabledf %>% select(-"H"))
+
+```
