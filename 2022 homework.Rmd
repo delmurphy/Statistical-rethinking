@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
 library(rethinking)
 library(knitr)
+library(dagitty)
 
 ```
 
@@ -311,5 +312,261 @@ tabledf$lower_interval<-apply(sim_weight, 2, PI, prob = 0.89)[1,]*sd(df$weight) 
 tabledf$upper_interval<-apply(sim_weight, 2, PI, prob = 0.89)[2,]*sd(df$weight) + mean(df$weight)
 
 kable(tabledf %>% select(-"H"))
+
+```
+
+
+### Q2  
+From the Howell1 dataset, consider only the people younger than 13 years
+old. Estimate the causal association between age and weight. Assume that
+age influences weight through two paths. First, age influences height, and
+height influences weight. Second, age directly influences weight through age-
+related changes in muscle growth and body proportions. All of this implies
+this causal model (DAG):
+
+```{r w2.2.dag, fig.dim=c(2,1.5)}
+
+g <- dagitty::dagitty( "dag{
+  A -> H; A -> W; H -> W
+}"
+)
+dagitty::coordinates(g) <- list(x = c(A = 1, H = 2, W = 3), y = c(A = 1, H = -2, W = 1))
+drawdag(g, cex = 1.5, lwd = 3)
+```
+
+Use a linear regression to estimate the total (not just direct) causal effect of
+each year of growth on weight. Be sure to carefully consider the priors. Try
+using prior predictive simulation to assess what they imply.
+
+```{r w2.2}
+#load the data and define the model
+
+data("Howell1")
+df_kids<-Howell1 %>% filter(age<13)
+mean_age = mean(df_kids$age)
+
+#For the total effect of age on weight, no need to include height in the model
+
+m2.2 <- quap(
+  flist = alist(
+    weight ~ dnorm(mu, sigma),
+    mu <- a + b*age,
+    a ~ dnorm(3, 1), #mean birth weight is roughly 3kg (wiki) with a small variation
+    b ~ dlnorm(0, 1), #weight (typically) increases with age so b must be +ve (still fuzzy on lognorm values)
+    sigma ~ dexp(1)
+  ), data = df_kids
+)
+
+```
+
+Use prior predictive simulation to assess the priors.
+
+```{r w2.2.2}
+prior <- extract.prior( m2.2 )
+xseq <- 0:12
+mu <- link( m2.2 , post=prior , data=list(age = 0:12) )
+plot( NULL , xlim=c(0, 12) , ylim=c(0, 30), xlab = 'age', ylab = 'weight' )
+for ( i in 1:50 ) lines( 0:12 , mu[i,] , col=col.alpha("black",0.3) )
+
+```
+
+This allows a wide range of relationships between age and weight - some are unreasonably strong, but the data should be able to deal with this.
+
+Let's look at the posterior distribution and model predictions:
+
+```{r w2.2.3}
+# define sequence of ages to compute predictions for
+# these values will be on the horizontal axis
+age_seq <- 0:12
+
+# use link to compute mu
+# for each sample from posterior
+# and for each height in H.seq
+mu <- link( m2.2 , data=data.frame(age=age_seq) )
+
+# summarize the distribution of mu
+mu.mean <- apply( mu , 2 , mean )
+mu.PI <- apply( mu , 2 , PI , prob=0.89 )
+
+
+# plot raw data
+# fading out points to make line and interval more visible
+plot( weight ~ age , data=df_kids , col=col.alpha(rangi2,0.5) )
+
+# plot the quap line, aka the mean mu for each weight
+lines( age_seq , mu.mean )
+
+# plot a shaded region for 89% PI
+shade( mu.PI , age_seq )
+
+# plot the prediction interval (values the model expects)
+sim_w <- sim( m2.2 , data=list(age = age_seq) ) 
+w_pi <- apply( sim_w , 2 , PI , prob=0.89 )
+
+# draw PI region for simulated heights
+shade( w_pi , age_seq )
+
+#plot the coefficient estimates
+#coeftab_plot(coeftab(m2.2))
+
+precis(m2.2)
+
+```
+
+Mean birth weight is expected to be about 7kg, with weight increasing by 1.3-1.5kg per year.
+
+
+### Q3.  
+
+Now suppose the causal association between age and weight might be dif-
+ferent for boys and girls. Use a single linear regression, with a categorical
+variable for sex, to estimate the total causal effect of age on weight separately
+for boys and girls. How do girls and boys differ? Provide one or more pos-
+terior contrasts as a summary.
+
+```{r w2.3}
+#create sex column in df, where female == 1 and male == 2
+df_kids <- df_kids %>% mutate(sex = male+1)
+
+#define the model
+
+m2.3 <- quap(
+  flist = alist(
+    weight ~ dnorm(mu, sigma),
+    mu <- a[sex] + b[sex]*age,
+    a[sex] ~ dnorm(3, 1),
+    b[sex] ~ dlnorm(0, 1),
+    sigma ~ dexp(1)
+    ),
+  data = df_kids
+)
+
+#print model coeficients
+precis(m2.3, depth = 2)
+
+#calculate posterior contrasts
+post <- extract.samples(m2.3)
+diff_sex <- post$a[,1] - post$a[,2]
+PI( diff_sex )
+
+#plot contrasts
+age_seq <- 0:12
+# compute mu over samples, fixing sex at female
+mu_f <- link( m2.3, data=data.frame( sex=1 , age=age_seq ) )
+
+# compute mu over samples, fixing sex at male
+mu_m <- link( m2.3, data=data.frame( sex=2 ,  age=age_seq ) )
+
+# summarize to means and intervals
+mu_f_mu <- apply( mu_f , 2 , mean )
+mu_f_ci <- apply( mu_f , 2 , PI , prob=0.97 )
+mu_m_mu <- apply( mu_m , 2 , mean )
+mu_m_ci <- apply( mu_m , 2 , PI , prob=0.97 )
+
+#plot the data
+cols <- c("red", "blue")
+plot(weight ~ age, data = df_kids, col = cols[sex])
+
+# plot the quap line, aka the mean mu for each weight
+lines( age_seq , mu_f_mu, col = cols[1], lwd = 3 )
+lines( age_seq , mu_m_mu, col = cols[2], lwd = 3 )
+
+# plot a shaded region for 89% PI
+shade( mu_f_ci , age_seq, col = col.alpha("red", 0.5))
+shade( mu_m_ci , age_seq, col = col.alpha("blue", 0.5))
+
+legend("topleft", c("female", "male"),
+       lty = c(1,1),
+       col = c("red", "blue"))
+
+```
+
+Boys are typically heavier than girls of the same age, and it looks like the difference increases with age.
+
+BUt let's contrast the predicted distribution of weights across all ages to get a better idea of what's going on.
+
+```{r w2.3.3}
+# contrast at each age
+Aseq <- 0:12
+mu1 <- sim(m2.3,data=list(age=Aseq,sex=rep(1,13)))
+mu2 <- sim(m2.3,data=list(age=Aseq,sex=rep(2,13)))
+mu_contrast <- mu1
+for ( i in 1:13 ) mu_contrast[,i] <- mu2[,i] - mu1[,i]
+plot( NULL , xlim=c(0,13) , ylim=c(-15,15) , xlab="age" ,
+ylab="girls heavier <- weight difference -> boys heavier" )
+for ( p in c(0.5,0.67,0.89,0.99) )
+shade( apply(mu_contrast,2,PI,prob=p) , Aseq )
+abline(h=0,lty=2,lwd=2)
+
+```
+
+Boys tend to be heavier across all ages, but the distributions overlap a lot, particularly for younger kids. In older kids, the difference between boys' and girls' weight gets stronger.
+
+
+### Q4  OPTIONAL CHALLENGE. 
+The data in data(Oxboys) (rethinking
+package) are growth records for 26 boys measured over 9 periods. I want
+you to model their growth. Specifically, model the increments in growth
+from one period (Occasion in the data table) to the next. Each increment is
+simply the difference between height in one occasion and height in the pre-
+vious occasion. Since none of these boys shrunk during the study, all of the
+growth increments are greater than zero. Estimate the posterior distribution
+of these increments. Constrain the distribution so it is always positive—it
+should not be possible for the model to think that boys can shrink from year
+to year. Finally compute the posterior distribution of the total growth over
+all 9 occasions.
+
+
+
+```{r w2.4}
+data("Oxboys")
+
+#as we haven't been taught how to use random effects in a quap model yet, 
+#I presume we ignore the random effect of ID?
+
+#calculate growth increments in df
+df <- Oxboys %>% group_by(Subject) %>%
+  mutate(increment = case_when(
+    Occasion==1 ~ 0,
+    TRUE ~ height-lag(height)
+  )) %>% ungroup() %>%
+  filter(Occasion > 1)  #no need to model increment at Occasion 1 as this is always 0
+
+#define the model:
+m2.4 <- quap(
+  flist = alist(
+    increment ~ dlnorm(alpha, sigma), #use lognormal dist to constrain increments to be positive
+    alpha ~ dnorm(0, 0.1), # alpha is the mean of the normal distribution, whose log we use for increment
+    sigma ~ dexp(3)
+  ),
+  data = df
+)
+
+#plot prior predictive distribution of increments
+prior <- extract.prior( m2.4, n = 1e3 )
+sim_increment <- rlnorm(prior$alpha, prior$sigma)
+dens(sim_increment)
+#The code below also does the same thing (I think)
+# simulation from priors
+n <- 1e3
+alpha <- rnorm(n,0,0.1)
+sigma <- rexp(n,3)
+delta_sim <- rlnorm(n,alpha,sigma)
+dens(delta_sim)
+#Play around with values for alpha and sigma - difficult to understand how they will affect the distribution!
+
+
+#Now plot the distribution of increments from the posterior
+post <- extract.samples(m2.4)
+dsim <- rlnorm(1e3, post$alpha,post$sigma)
+dens(dsim)
+
+#and to get the distribution of total growth over the 9 occasions:
+#(what is this doing?
+#we're generating 8 values from a lognormal distribution with the same values of alpha and sigma,
+#then summing them, and we're doing that for the first 1000 rows from the posterior sample)
+inc_sum <- sapply( 1:1000 ,
+                   function(s) sum(rlnorm(8,post$alpha[s],post$sigma[s])) )
+dens(inc_sum)
 
 ```
