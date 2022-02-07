@@ -206,7 +206,7 @@ legend("topleft", c("unbiased", "biased (not accounting for land misclass)"),
 
 
 ## Week 2 homework
-Covering chapters 4 and 5 of the book.
+Covering chapters 4 and 5 of the book (lectures 3 and 4).
 
 ### Q1
 Construct a linear regression of weight as predicted by height, using the
@@ -568,5 +568,252 @@ dens(dsim)
 inc_sum <- sapply( 1:1000 ,
                    function(s) sum(rlnorm(8,post$alpha[s],post$sigma[s])) )
 dens(inc_sum)
+
+```
+
+
+
+## Week 3 homework
+Covering chapters 5 and 6 of the book (lectures 5 and 6).
+
+
+### Q1.  
+The first two problems are based on the same data. The data in data(foxes)
+are 116 foxes from 30 different urban groups in England. These fox groups
+are like street gangs. Group size (groupsize) varies from 2 to 8 individuals.
+Each group maintains its own (almost exclusive) urban territory. Some ter-
+ritories are larger than others. The area variable encodes this information.
+Some territories also have more avgfood than others. And food influences
+the weight of each fox. Assume this DAG (where F is avgfood, G is groupsize, 
+A is area, and W is weight).
+Use the backdoor criterion and estimate the total causal influence of A on
+F. What effect would increasing the area of a territory have on the amount
+of food inside it?:
+
+```{r w3.dag, fig.dim = c(2, 1.5)}
+foxdag <- dagitty::dagitty(
+  "dag{A -> Fd; Fd -> G; Fd -> W; G -> W}"
+)
+coordinates(foxdag) <- list(x = c(Fd = 1, A = 2, W = 2, G = 3), y = c(A = -1, Fd = 0, W = 1, G = 0))
+drawdag(foxdag, cex = 1.5, lwd = 3)
+```
+
+_There are no backdoors between A and F, so just model F as a function of A for the total causal influence._
+
+```{r w3.1}
+data("foxes")
+#head(foxes)
+#str(foxes)
+
+#standardise avgfood and area
+foxes<-foxes %>% mutate(A = standardize(area), Fd = standardize(avgfood))
+
+#define the model
+m3.1 <- quap(
+  flist = alist(
+    Fd ~ dnorm(mu, sigma),
+    mu <- a + b*A,
+    a ~ dnorm(0, 1),
+    b ~ dnorm(0, 1),
+    sigma ~ dexp(1)
+  ),
+  data = foxes
+)
+
+#plot prior predictive distribution:
+prior <- extract.prior(m3.1)
+xseq <- -3:3
+mu <- link( m3.1 , post=prior , data=list(A = xseq) )
+plot( NULL , xlim=c(-3,3) , ylim=c(-3,3), xlab = 'std.area', ylab = 'std.food' )
+for ( i in 1:50 ) lines( xseq , mu[i,] , col=col.alpha("black",0.3) )
+
+#plot the posterior predictive distribution
+# compute mu over samples
+mu <- link( m3.1, data=list( A = xseq ) )
+
+# summarize to means and intervals
+mu_mean <- apply( mu , 2 , mean )
+mu_ci <- apply( mu , 2 , PI , prob=0.97 )
+
+#plot the data
+plot(Fd ~ A, data = foxes, xlab = "std.area", ylab = "std.avgfood")
+
+# plot the quap line, aka the mean mu for each weight
+lines( xseq , mu_mean, lwd = 3 )
+
+# plot a shaded region for 89% PI
+shade( mu_ci , xseq)
+
+# plot the prediction interval (values the model expects)
+sim.Fd <- sim( m3.1 , data=list(A = xseq) ) 
+Fd.PI <- apply( sim.Fd , 2 , PI , prob=0.89 )
+shade( Fd.PI , xseq)
+
+coeftab_plot(coeftab(m3.1))
+precis(m3.1)
+
+```
+
+Average food increases with area - for each unit increase in standardised area, standardised avgfood is expected to increase by 0.88 in average.
+
+### Q2.
+Now infer both the total and direct causal effects of adding food F to a
+territory on the weight W of foxes. Which covariates do you need to adjust for
+in each case? In light of your estimates from this problem and the previous
+one, what do you think is going on with these foxes? Feel free to speculate—
+all that matters is that you justify your speculation.
+
+```{r w3.2}
+#For the total causal effect of F on W, no need to control for anything else:
+
+foxes <- foxes %>% mutate(W = standardize(weight))
+
+m3.2total <- quap(
+  flist = alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + b*Fd,
+    a ~ dnorm(0, 1),
+    b ~ dnorm(0, 1),
+    sigma ~ dexp(1)
+  ),
+  data = foxes
+)
+
+#plot posterior predictions
+Fseq <- -3:3
+mu <- link(m3.2total, data = list(Fd = Fseq))
+mu_mean <- apply(mu, 2, mean)
+mu_ci <- apply(mu, 2, PI, prob = 0.97)
+plot(W ~ Fd, data = foxes, xlab = "std.avgfood", ylab = "std.weight", main = "total effect of average food on weight")
+lines(Fseq, mu_mean)
+shade(mu_ci, Fseq)
+Wsim <- sim(m3.2total, data = list(Fd = Fseq))
+sim_PI <- apply(Wsim, 2, PI, prob = 0.89)
+shade(sim_PI, Fseq)
+
+```
+
+Looks like no (or very little) total effect of average food on weight.
+
+```{r w3.2.2}
+#For the direct causal effect of F on W, must control for G
+
+foxes <- foxes %>% mutate(G = standardize(groupsize))
+
+m3.2direct <- quap(
+  flist = alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + bF*Fd + bG*G,
+    a ~ dnorm(0, 1),
+    bF ~ dnorm(0, 1),
+    bG ~ dnorm(0, 1),
+    sigma ~ dexp(1)
+  ),
+  data = foxes
+)
+
+#plot posterior predictions (with G set to 0)
+Fseq <- -3:3
+mu <- link(m3.2direct, data = list(Fd = Fseq, G = 0))
+mu_mean <- apply(mu, 2, mean)
+mu_ci <- apply(mu, 2, PI, prob = 0.97)
+plot(W ~ Fd, data = foxes, xlab = "std.avgfood", ylab = "std.weight", main = "direct effect of food on weight (controlling for group size)")
+lines(Fseq, mu_mean)
+shade(mu_ci, Fseq)
+Wsim <- sim(m3.2direct, data = list(Fd = Fseq, G = 0))
+sim_PI <- apply(Wsim, 2, PI, prob = 0.89)
+shade(sim_PI, Fseq)
+
+```
+
+Controlling for groupsize, we can see that the direct effect of changing the amount of food available is that weight increases.
+These results suggest that areas with more food tend to have bigger groups, but the average weight of wolves in smaller or larger groups is similar (perhaps because of a limit on groupsize imposed by the amount of food available).
+If we could hold the groupsize constant but add more food, we would expect the average weight to increase.
+
+
+### Q3.  
+Reconsider the Table 2 Fallacy example (from Lecture 6), this time with an
+unobserved confound U that influences both smoking S and stroke Y. Here’s
+the modified DAG:
+
+```{r w3.3dag, fig.dim = c(2, 1.5)}
+dag3.3<-dagitty("dag{Y <- U -> S; A -> S; A -> X; A -> Y; S -> X; S -> Y; X -> Y}")
+
+coordinates(dag3.3) <- list(x = c(U = 2),
+                            y = c(U = -3))
+
+drawdag(dag3.3, cex = 1.5, lwd = 3)
+
+```
+
+First use the backdoor criterion to determine an adjustment set that allows
+you to estimate the causal effect of X on Y, i.e. P(Y|do(X)). Second explain
+the proper interpretation of each coefficient implied by the regression model
+that corresponds to the adjustment set. Which coefficients (slopes) are causal
+and which are not? There is no need to fit any models. Just think through
+the implications.  
+
+_*answer*_  
+_Without the unobserved variable, U, then there are backdoors from X to Y through A and S, so conditioning on A and S should be enough to close both backdoors, using the model Y ~ X + A + S._  
+_The unobserved variable U introduces a collider, where S is influenced by A and U, and also a fork, where U influeces both S and Y. However this doesn't influence the effect of X on Y, so we still condition on both A and S, with the same model as above._  
+
+_Check this with dagitty_
+
+```{r w3.4.adjustmentsets}
+
+adjustmentSets(dag3.3, exposure = "X", outcome = "Y")
+
+```
+
+_From the solution pdf:_  
+The coefficient for X should still
+be the estimate of the causal effect of X on Y, P(Y|do(X)).  
+Now the coefficients for A and S are not
+even partial causal effects, because both are biased by the collider through
+U. In effect the unobserved confound makes the control coefficients unin-
+terpretable even as partial causal effects.
+The irony here is that is still possible to estimate the casual effect of age A
+on Y. But in the model that stratifies by S, the coefficient for age becomes
+confounded. It really is not safe to interpret control coefficients, unless there
+is an explicit causal model.
+
+### Q4. OPTIONAL CHALLENGE. 
+Write a synthetic data simulation for the causal
+model shown in Problem 3. Be sure to include the unobserved confound
+in the simulation. Choose any functional relationships that you like—you
+don’t have to get the epidemiology correct. You just need to honor the causal
+structure. Then design a regression model to estimate the influence of X on
+Y and use it on your synthetic data. How large of a sample do you need to
+reliably estimate P(Y|do(X))? Define “reliably” as you like, but justify your
+definition.
+
+```{r 3.4}
+n <- 100
+bX <- 0
+A <- rnorm(n, 0, 0.1)
+U <- rnorm(n, 0, 0.1)
+S <- rnorm(n, A+U, 0.1)
+X <- rnorm(n, A+S, 0.1)
+Y <- rnorm(n, U+A+S+bX*X, 0.1)
+
+plot(X, Y)
+
+df <- data.frame (A = A, U = U, S = S, X = X, Y = Y)
+
+m3.4 <- quap(
+  flist = alist(
+    Y ~ dnorm(mu, sigma),
+    mu <- a + bA*A + bS*S + bX*X,
+    a ~ dnorm(0, 1),
+    bA ~ dnorm(0, 1),
+    bX ~ dnorm(0, 1),
+    bS ~ dnorm(0, 1),
+    sigma ~ dexp(1)
+  ), 
+  data = df
+)
+
+precis(m3.4)
+
 
 ```
