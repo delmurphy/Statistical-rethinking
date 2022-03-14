@@ -1245,3 +1245,262 @@ ggplot(d, aes(x = age, y = M)) +
 ```
 
 Much better!
+
+
+## Week 5 homework
+Covering chapters 10 and 11 of the book (lectures 9 and 10).
+Generalised linear models.  
+
+### Q1.  
+1. The data in data(NWOGrants) are outcomes for scientific funding applications
+for the Netherlands Organization for Scientific Research (NWO) from 2010–2012
+(see van der Lee and Ellemers doi:10.1073/pnas.1510159112). These data have a
+very similar structure to the UCBAdmit data discussed in Chapter 11. Draw a DAG
+for this sample and then use one or more binomial GLMs to estimate the TOTAL
+causal effect of gender on grant awards.
+
+```{r 5.1, fig.dim = c(2, 1.5)}
+#load data
+data(NWOGrants)
+d<-NWOGrants
+head(d)
+#create numeric variable for gender (female == 2, male ==2)
+d$G <- ifelse(d$gender=="f", 1, 2)
+
+#dag
+dag <- dagitty( "dag{
+  awards <- gender -> discipline -> awards
+}"
+)
+
+coordinates(dag) <- list(x = c(awards = 3, discipline = 2, gender = 1),
+                      y = c(awards = 1, discipline = 0, gender = 1))
+
+plot(dag, cex = 1.5, lwd = 3)
+```
+
+```{r 5.1 model}
+
+#There is a backdoor path from gender through discipline to awards, so for the total effect of gender, don't condition on discipline
+#We need a binomial glm for the proportion of awards given the number of applications
+
+m5.1 <- ulam(
+  alist(
+    awards ~ dbinom(applications, p),
+    logit(p) <- a[G],
+    a[G] ~ dnorm(0, 1)
+    ),
+  data = d, chains = 4
+)
+
+#diagnostic plots
+traceplot(m5.1)
+trankplot(m5.1)
+
+#coefficients
+precis(m5.1, depth = 2)
+```
+
+```{r 5.1 visualise}
+#visualise the output
+post <- extract.samples(m5.1)
+#to get back on the probability scale from the logit scale, use inv_logit
+fpost <- inv_logit(post$a[,1])
+mpost <- inv_logit(post$a[,2])
+
+dens(fpost, col = "red", xlim = c(0.1, 0.22), main = "posterior prob of female (red) and male (blue) applicants being accepted")
+dens(mpost, col = "blue", add = TRUE)
+
+#calculate the contrast between males and females
+diff_prob <- fpost - mpost
+dens(diff_prob, main = "0 = no difference, <0 = males advantaged, >0 = females advantaged",
+     xlab = "female prob - male prob")
+
+```
+
+The model suggests males are slightly advantaged in their applications, with a man's application having a probability of being accepted between `r abs(PI(diff_prob)[[1]])` and `r abs(PI(diff_prob)[[2]])` (89% interval) greater than a woman's application.
+
+
+### Q2. 
+Now estimate the DIRECT causal effect of gender on grant awards. Compute
+the average direct causal effect of gender, weighting each discipline in proportion to
+the number of applications in the sample. Refer to the marginal effect example in
+Lecture 9 for help.
+
+```{r 5.2}
+#To estimate the direct causal effect of Gender, we need to condition on Discipline
+
+#first convert discipline to numeric
+d$D <- as.numeric(d$discipline)
+
+
+m5.2 <- ulam(
+  alist(
+    awards ~ dbinom(applications, p),
+    logit(p) <- a[G, D],
+    matrix[G, D]:a ~ dnorm(0, 1)
+  ), data = d, chains = 4
+)
+
+#traceplot(m5.2)
+#trankplot(m5.2)
+precis(m5.2, depth = 3)
+#diagnostics look good
+
+#now plot estimates
+post<-extract.samples(m5.2)
+#convert to probability scale
+pA<-inv_logit(post$a)
+ndisc<-dim(pA)[3]
+post_diff <- sapply(1:ndisc, function(i) pA[,1,i] - pA[,2,i])
+#plot (weighting the lines by the proportion of applications per dept)
+w <- sapply(1:ndisc, function(i) sum(d$applications[d$D==i])/sum(d$applications))
+#also by xtabs
+#w <- xtabs(d$applications ~ d$D)/sum(d$applications)
+plot(NULL, xlim = c(-0.5, 0.5), ylim = c(0, 20), xlab = "men advantaged <- Gender contrast -> women advantaged", ylab = "Density")
+for(i in 1:dim(post_diff)[2]) dens(post_diff[,i], lwd = 2+20*w[i], col = i+1, add = TRUE)
+abline(v = 0, lty = 3)
+legend("topleft", legend=levels(d$discipline), pch=16, col=1:ndisc+1)
+
+#Finally plot the average causal effect of gender marginalised over departments
+#simulate dataset where applications appear the same number of times per discipline 
+#as in the original dataset, but where all applications came from women or men
+total_apps <- sum(d$applications)
+apps_per_D <- sapply(1:ndisc, function(i) sum(d$applications[d$D==i]))
+#use link to simulate the log odds of each application/row in the dataset of all women applicants
+#(weighted by the number of applications per discipline)
+p_women <- link(m5.2, data = list(
+  applications = rep(1, total_apps),
+  D = rep(1:ndisc, times = apps_per_D),
+  G = rep(1, total_apps)
+))
+#dim(p_women): 2000 2823
+#(why 2000 samples when the default is 1000?)
+p_men <- link(m5.2, data = list(
+  applications = rep(1, total_apps),
+  D = rep(1:ndisc, times = apps_per_D),
+  G = rep(2, total_apps)
+))
+
+p_diff <- inv_logit(p_women) - inv_logit(p_men)
+
+dens(p_diff, lwd = 4, col = 2, xlab = "men <- effect of gender perception -> women")
+abline(v = 0, lty = 3)
+
+```
+
+Marginalising over all disciplines, the peak of the probability mass of the difference between the probability of a woman's application being accepted and a man's application being accepted shows a slight advantage for men.  
+
+
+### Q3. 
+Considering the total effect (problem 1) and direct effect (problem 2) of gender,
+what causes contribute to the average difference between women and men in award
+rate in this sample? It is not necessary to say whether or not there is evidence of
+discrimination. Simply explain how the direct effects you have estimated make sense
+(or not) of the total effect.
+
+The total effect of gender is that men tend to have a slight advantage over women in their applications. Conditioning on discipline, this advantage is still apparent. Probably because men are more likely to be accepted by departments that receive a larger number of applications.
+
+### 4-OPTIONAL CHALLENGE. 
+The data in data(UFClefties) are the outcomes
+of 205 Ultimate Fighting Championship (UFC) matches (see ?UFClefties for details). It is widely believed that left-handed fighters (aka “Southpaws”) have an advantage against right-handed fighters, and left-handed men are indeed over-represented among fighters (and fencers and tennis players) compared to the general population. Estimate the average advantage, if any, that a left-handed fighter has
+against right-handed fighters. Based upon your estimate, why do you think left-handers are over-represented among UFC fighters?
+
+```{r 5.4, eval = F}
+#Wrong answer
+
+data("UFClefties")
+d <- UFClefties
+#model fighter1.win ~ fighter1.lefty*fighter2.lefty (because lefites have advantage over righties only?)
+#in McElreath's code, that is a matrix of figher1.lefty and fighter2.lefty
+#Make fighter1.lefty and fighter2.lefty into a handedness index, 1 = R, 2 = L
+#(also change fighter1.win to win, and remove other cols cos stan can't deal with "." in colnames)
+d <- d %>% mutate(win = fighter1.win, H1 = fighter1.lefty+1, H2 = fighter2.lefty+1) %>% 
+  select(H1, H2, win)
+
+#model
+m5.4<-ulam(
+  alist(
+    win ~ dbinom(1, p),
+    logit(p) <- a[H1, H2],
+    matrix[H1, H2]:a ~ dnorm(0, 1)
+  ), data = d, chains = 4
+)
+
+# traceplot(m5.4)
+# trankplot(m5.4)
+precis(m5.4, depth = 3)
+#diagnsotics look good
+
+#plot the estimates
+post <- extract.samples(m5.4)
+p <- inv_logit(post$a) #dim = [sample, winner_handedness, opponent_handedness]
+#Q do lefties have an advantage when fighting righties v when fighting lefties?
+#difference between prob of lefty beating righty and lefty beating lefty
+pdiff1 <- p[,1,1]-p[,1,2] #(p[lefties-lefties] - p[lefties-righties])
+dens(pdiff1, col = 2, lwd = 4, xlab = "adv against righty <- prob lefty wins -> adv against lefty")
+abline(v = 0, lty = 3)
+#A lefty is slightly more likely to win against another lefty than against a righty
+
+#Q what's the average difference between lefties and righties marginalised over opponent handedness?
+#(what would be the effect of changing fighter 1's handedness in a fight?)
+#(weighing fights by the number of left and right handed opponents)
+nfights<-length(d$H1)
+nLRopp<-sapply(1:2, function(i) length(d$H2[d$H2==i]))
+pL<-link(m5.4, data = list(
+  H1 = rep(1, nfights),
+  H2 = rep(1:2, times = nLRopp)
+))
+pR<-link(m5.4, data = list(
+  H1 = rep(2, nfights),
+  H2 = rep(1:2, times = nLRopp)
+))
+
+pdiff2<-pL-pR
+
+dens(pdiff2, col = 2, lwd = 4, xlab = "right adv <- effect of handedness -> left adv")
+
+# 
+# The plots show that lefties are more likely to win a fight, but also that they have more of an advantage over other lefties than over righties. Possibly there are a couple of great lefty fighters skewing the results in the lefties favour - a random effect of fighter ID could account for this.
+# Lefties might be overrepresented due to the reputations of a small number of very good lefty fighters racking up a lot of wins, making it seem like being a lefty is an advantage.
+
+```
+
+
+
+```{r 5.4 solution}
+
+#McElreath's solution
+
+#The dataset is dyadic, in that each row shows two fighters.
+#We need to model this in a way that is invariant to fighter position,
+#so if there is an advantage for lefties, then:
+#prob_win1 ~ left_adv*fighter1.lefty - left_adv*fighter2.lefty
+#prob_win1 ~ left_adv(fighter1.lefty - fighter2.lefty) #left_adv is same regardless of fighter
+
+data("UFClefties")
+d<-UFClefties %>% select(win = fighter1.win, L1 = fighter1.lefty, L2 = fighter2.lefty)
+m5.4s <- ulam(
+  alist(
+    win ~ dbinom(1, p),
+    logit(p) <- a + bL*(L1-L2),
+    a ~ dnorm(0, 1),
+    bL ~ dnorm(0, 1)
+  ), data = d, chains = 4
+)
+
+# traceplot(m5.4s)
+# trankplot(m5.4s)
+precis(m5.4s)
+#diagnostics look good
+
+#plot estimates
+post<-extract.samples(m5.4s)
+dens(inv_logit(post$a + post$bL), lwd = 4, col =2, main = "Southpaw advantage?", xlab = "prob of lefty winning")
+abline(v = 0.5, lty = 3)
+
+```
+
+No evidence of a lefty advantage.  
+So why are there so many lefties in boxing (and tennis and fencing)? McElreath suggests one possible answer is that there really is a lefty advantage but by the time they make it to professional levels, there is a collider bias, where both ability and left-handedness influence qualifying to pro levels, so right-handers at pro levels have greater ability on average to make up for the lefty advantage, meaning the lefy advantage is meaningless at pro level.
+We could account for ability levels by including fighter ID as a random effect (but we haven't covered mixed models yet).
