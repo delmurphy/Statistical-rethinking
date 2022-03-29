@@ -1503,4 +1503,352 @@ abline(v = 0.5, lty = 3)
 
 No evidence of a lefty advantage.  
 So why are there so many lefties in boxing (and tennis and fencing)? McElreath suggests one possible answer is that there really is a lefty advantage but by the time they make it to professional levels, there is a collider bias, where both ability and left-handedness influence qualifying to pro levels, so right-handers at pro levels have greater ability on average to make up for the lefty advantage, meaning the lefy advantage is meaningless at pro level.
-We could account for ability levels by including fighter ID as a random effect (but we haven't covered mixed models yet).
+We could account for ability levels by including fighter ID as a random effect (but we haven't covered mixed models yet).  
+
+
+## Week 6 homework
+Covering chapters 12 and 13 of the book (lectures 11 and 12).
+Ordered categories and multilevel (mixed) models.  
+
+The theme of this homework is tadpoles. You must keep them alive.
+
+### Q1. 
+1. Conduct a prior predictive simulation for the Reedfrog model. By this I mean to
+simulate the prior distribution of tank survival probabilities αj. Start by using this
+prior:
+
+$$αj ∼Normal(\overline{α}, σ)\\
+\overline{α} ∼Normal(0, 1)\\
+σ ∼Exponential(1)$$  
+
+
+Be sure to transform the αj values to the probability scale for plotting and summary.
+How does increasing the width of the prior on σ change the prior distribution of αj?
+You might try Exponential(10) and Exponential(0.1) for example.
+
+```{r 6.1}
+
+#prior predictive simulation:
+#sigma ~ exp(1)
+N<-1e4
+a_<-rnorm(N, 0, 1)
+sigma <- rexp(N, 1)
+aj<-rnorm(N, a_, sigma)
+aj_prob <- inv_logit(aj)
+dens(aj_prob, main = "prior predictive probability of tank survival, sigma ~ exp(1)")
+#sigma ~ exp(10)
+sigma <- rexp(N, 10)
+aj<-rnorm(N, a_, sigma)
+aj_prob <- inv_logit(aj)
+dens(aj_prob, main = "prior predictive probability of tank survival, sigma ~ exp(10)")
+#sigma ~ exp(0.1)
+sigma <- rexp(N, 0.1)
+aj<-rnorm(N, a_, sigma)
+aj_prob <- inv_logit(aj)
+dens(aj_prob, main = "prior predictive probability of tank survival, sigma ~ exp(0.1)")
+
+```
+
+Increasing the width of the prior on sigma pushes more of the prior probability to the middle of the distribution (i.e. giving the most weight to survival probabilities around 0.5), while using a narrower prior on sigma forces the probability mass to the extreme values of 0 and 1, meaning we are telling the model to expect that either all tadpoles die or all survive in a given tank.  
+
+
+### Q2. 
+Revisit the Reedfrog survival data, data(reedfrogs). Start with the varying
+effects model *(I think "varying effects" is just the same as "random effects"?)* from the book and lecture. Then modify it to estimate the causal effects
+of the treatment variables pred and size, including how size might modify the effect
+of predation. An easy approach is to estimate an effect for each combination of pred
+and size. Justify your model with a DAG of this experiment.
+
+```{r 6.2}
+data("reedfrogs")
+d <- reedfrogs
+
+#Varying/Random effects model
+#first, make the tank cluster variable (each row is a different tank)
+d$tank <- 1:nrow(d)
+d$P <- ifelse(d$pred=="no", 1, 2)
+d$big <- ifelse(d$size=="big", 1, 2)
+
+dat <- list(N = d$density,
+            S = d$surv,
+            tank = d$tank,
+            P = d$P,
+            big = d$big)
+#Varying effects model 
+# (All that is required to enable adaptive pooling is to make the prior for the a parameters a func-
+# tion of some new parameters.)
+#  m6.2var<-ulam(
+#    alist(
+#      S ~ dbinom(N, p),
+#      logit(p) <- a[tank],
+#      a[tank] ~ dnorm(a_bar, sigma),
+#      a_bar ~ dnorm(0, 1.5),
+#      sigma ~ dexp(1)
+#    ), data = dat, chains = 4, log_lik = T
+#  )
+# precis(m6.2var, depth = 2)
+
+#Now modify the model to include the effects of pred and size, including how size might modify the effect of pred (so a random intercept for tank, and an interaction between pred and size?)
+#Can't get the interaction to work - using the hint to estimate an effect for each combination of pred and size
+# d$ps <- factor(paste(d$pred, d$size))
+# d$ps1 <-as.numeric(d$ps)
+# dat$PS <- d$ps1
+
+#  m6.2<-ulam(
+#    alist(
+#      S ~ dbinom(N, p),
+#      logit(p) <- a[tank] + b*PS,
+#      a[tank] ~ dnorm(a_bar, sigma),
+#      a_bar ~ dnorm(0, 1.5),
+#      sigma ~ dexp(1),
+#      b ~ dnorm(0, 1)
+#    ), data = dat, chains = 4, log_lik = T
+#  )
+# precis(m6.2, depth = 2)
+# #neff is quite low for b - problems estimating?
+# #compare(m6.2var, m6.2)
+# 
+# #plot the predictions
+# # extract Stan samples
+# post <- extract.samples(m6.2)
+# # compute median intercept for each tank
+# # also transform to probability with logistic
+# d$propsurv.est <- logistic( apply( post$a , 2 , mean ) )
+# # display raw proportions surviving in each tank
+# plot( d$propsurv , ylim=c(0,1) , pch=16 , xaxt="n" ,
+# xlab="tank" , ylab="proportion survival" , col=rangi2 )
+# axis( 1 , at=c(1,16,32,48) , labels=c(1,16,32,48) )
+# # overlay posterior means
+# points( d$propsurv.est )
+
+#This model is overpredicting survival for many tanks - predictions are all in the range 0.7-0.99, while prop_surv is between 0.1 and 1.
+#Why? 
+#Because I'm adding the slope to the tank mean survival? Should I be adding it to the overall sample (average) intercept (a_bar)? Another linear model for a_bar (a model within a model)?
+#No - it was because I wasn't (a) specifying the model correctly and (b) I wasn't calculating the predictions properly.
+
+#Try again:
+
+ m6.2a<-ulam(
+   alist(
+     S ~ dbinom(N, p),
+     logit(p) <- a[tank] + b[P, big],
+     #a[tank] ~ dnorm(a_bar, sigma) ,
+     #a_bar ~ dnorm(0, 1.5),
+     a[tank] ~ dnorm(0, sigma), #McElreath sets the mean to 0 rather than learning from the data - why?
+     sigma ~ dexp(1),
+     matrix[P, big]:b ~ dnorm(0, 1)
+   ), data = dat, chains = 4, log_lik = T
+ )
+precis(m6.2a, depth = 3, pars = c("b", "sigma"))
+#seems to run ok, with good rhat and n_eff values
+
+#plot the predictions
+# extract Stan samples
+post <- extract.samples(m6.2a)
+# compute mean intercept for each tank
+# also transform to probability with logistic
+d$tank.est <- apply( post$a , 2 , mean )
+d <- d %>% mutate(beta.est = case_when(
+  P==1 & big==1 ~ mean(post$b[,1,1]),
+  P==1 & big==2 ~ mean(post$b[,1,2]),
+  P==2 & big==1 ~ mean(post$b[,2,1]),
+  TRUE ~ mean(post$b[,2,2])),
+  propsurv.est = logistic(tank.est + beta.est))
+# display raw proportions surviving in each tank
+plot( d$propsurv , ylim=c(0,1) , pch=16 , xaxt="n" ,
+xlab="tank" , ylab="proportion survival" , col=rangi2 )
+axis( 1 , at=c(1,16,32,48) , labels=c(1,16,32,48) )
+# overlay posterior means
+points( d$propsurv.est )
+#Looks much better!
+
+
+```
+
+You can see in this plot the effects of the regularising prior learned from the data. Predictions for more extreme values are closer to the overall mean value for all tanks due to shrinkage.  
+
+
+```{r 6.2 effects}
+
+#so what is the model saying that the effect of predation is on big and small tadpoles?
+#calculate the expected mean value for each tank under different interventions (big, small, pred, no pred)
+abar<-d$tank.est
+beta <-c()
+for(i in 1:2) for(j in 1:2) beta<-c(beta, mean(post$b[,i,j]))
+cols <- c("black", "black", "red", "red")
+lins <- c(1, 2, 1, 2)
+plot(NULL, xlim = c(0, 1), ylim = c(0, 18), main ="survival probability", xlab = "prob", ylab = "density")
+for(i in 1:4) dens(logistic(abar + beta[i]), add = T, col = cols[i], lty = lins[i])
+legend("topleft", c("no predators, big", "no predators, small", 
+                    "predators, big", "predators, small"),
+       lty = lins,
+       col = cols)
+
+
+```
+
+Without predators, survival probability is pretty similar regardless of the size of the tadpoles (although there is slightly higher survival probability for bigger tadpoles). 
+However, with predators, survival probability is lower for bigger tadpoles compared to smaller tadpoles.
+
+Dag of the experiment:
+```{r 6.2 dag,  fig.dim = c(2, 1.5)}
+survdag<-dagitty( "dag{
+  predators -> survival <- size; tank -> survival
+}"
+)
+
+# coordinates(dag) <- list(x = c(awards = 3, discipline = 2, gender = 1),
+#                       y = c(awards = 1, discipline = 0, gender = 1))
+
+plot(survdag, cex = 1.5, lwd = 3)
+
+```
+
+
+
+
+
+
+### Q3. 
+Now estimate the causal effect of density on survival. Consider whether pred
+modifies the effect of density. There are several good ways to include density in
+your Binomial GLM. You could treat it as a continuous regression variable (possibly standardized). Or you could convert it to an ordered category (with three levels). Compare the σ (tank standard deviation) posterior distribution to σ from your model in Problem 2. How are they different? Why?
+
+```{r 6.3}
+#Can I use density in the model twice? Once for the N in dbinom and once as a predictor variable?
+#Or shoudl I use propsurv instead of surv and N?
+
+#Again, I misunderstood this question - it wants us to include density in the previous model, not to just estimate the causal effects of density. See below for correct answer.
+
+#Try with density twice
+#Using an ordered category for density
+d$dens<-as.numeric(factor(d$density))
+dat$D <- d$dens
+dat$D_log<-standardize(log(dat$D)) #use log to account for diminishing returns on log-odds scale
+
+# m6.3 <- ulam(
+#   alist(
+#     S ~ dbinom(N, p),
+#     logit(p) <- a[tank] + b[P, D],
+#     a[tank] ~ dnorm(0, sigma),
+#     matrix[P, D]:b ~ dnorm(0, 1),
+#     sigma ~ dexp(1)
+#   ), data = dat, chains = 4, log_lik = T
+# )
+# precis(m6.3, depth = 3, pars = c("b", "sigma"))
+# 
+# #plot
+# post<-extract.samples(m6.3)
+# cols = c(rep("black", 3), rep("red",3))
+# lins = c(1, 2, 3, 1, 2, 3)
+# plot(NULL, xlab = "prob surv", ylab = "density", xlim = c(0, 1), ylim = c(0, 20))
+# for(i in 1:6) dens(logistic(post$alpha + post$b[,i]), col = cols[i], lwd = lins[i], add = T)
+# legend("topleft", c("no predators, low density", "no predators, mid density", "no predators, high density",
+#                     "predators, low density", "predators, mid density", "predators, high density"),
+#        lwd = lins,
+#        col = cols)
+
+
+m6.3 <- ulam(
+  alist(
+    S ~ dbinom(N, p),
+    logit(p) <- a[tank] + b[P, big] + bD[P]*D_log,
+    a[tank] ~ dnorm(0, sigma),
+    matrix[P, big]:b ~ dnorm(0, 1),
+    bD[P] ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = dat, chains = 4, log_lik = T
+)
+precis(m6.3, depth = 3, pars = c("b", "bD", "sigma"))
+
+#plot
+nrows<-48*12
+plotdat<-data.frame(tank = rep(1:48, each = 12), 
+              P = rep(c(1,1,2,2), nrows/4), 
+              big = rep(c(1,2,1,2), nrows/4),
+              D = rep(1:3, each = 4, times = nrows/12),
+              N = rep(c(10,25,35), each = 4, times = nrows/12),
+              combination = rep(1:12, nrows/12))
+plotdat$D_log <- standardize(log(plotdat$D))
+simdat<-list()
+#for(i in 1:12) simdat[[i]] <- logistic(sim(m6.3, data = plotdat[plotdat$combination==i,]))
+for(i in 1:12) simdat[[i]] <- link(m6.3, data = plotdat[plotdat$combination==i,])
+
+
+cols <- rep(c("black", "red"), each = 2, times = 3)
+lwds <- rep(c(2, 1), times = 6)
+ltys <- rep(c(3, 2, 1), each = 4)
+plot(NULL, xlim = c(0, 1), ylim = c(0, 12), main ="survival probability", xlab = "prob", ylab = "density")
+for(i in 1:12) dens(simdat[[i]], add = T, col = cols[i], lty = ltys[i], lwd = lwds[i])
+legend("topleft", c("no predators", "predators"), lty = 1, col = c("black", "red"))
+legend(x = -0.04, y = 9.95, c("low density", "mid density", "high density"), lty = c(3, 2, 1))
+legend(x = -0.04, y = 6.55, c("small", "big"), lwd = c(1, 2))
+
+
+```
+
+This model suggests that, without predators, there is not much difference in the probability of survival between the three different levels of density, although size and density do have an effect on survival even in the absence of predation. With predators, however, survival probability is greatly reduced, particularly for large tadpoles in high density and mid density tanks, with predicted survival much greater for small tadpoles in low density tanks (perhaps because there are more places to hide from predators?).
+
+Sigma from this model (89% range `r precis(m6.3, par = "sigma")[3,1]` - `r precis(m6.3, par = "sigma")[4,1]`) is lower than sigma from the previous model (89% range `r precis(m6.2a, par = "sigma")[3,1]` - `r precis(m6.2a, par = "sigma")[4,1]`), presumably because the addition of density as a predictor in the second model has mopped up some of the unexplained variance.
+
+### Optional Q4.  
+Using your estimates from the previous problems,
+compute the expected causal effect of removing predators from a population of tad-
+poles with size and density distributed according to this table:
+
+density |size   |size
+--------|-------|----
+density |small  |large
+10      |   25% |25%
+35      |   25% |25%
+
+In other words, 25% of the population is in groups of 10 small tadpoles, 25% in
+groups of 10 large tadpoles, 25% in groups of 35 small tadpoles, and 25% in groups
+of 25 large tadpoles. Think carefully about if and how you should incorporate the
+tank varying effects in this calculation.
+
+*I don't think I am understanding this question properly. Calculate the predicted survival rate in this population based on the effects of density and size without predators, using the estimates from the previous two models (not the previous 1 model)? Is it asking for the expected population distribution at the end of the experiment?*
+
+*Yeah, after looking at the solutions, I didn't understand this question at all. What it wants is the difference between these 4 tanks with predators and without predators. Solution below.*
+
+```{r 6.4, fig.show="hold", out.width="33.3333%"}
+
+#First simulate the population in (100) different tanks and model predictions with predation
+nreps <- 25
+D<-rep(c(10,35,10,35), nreps)
+D_log<-(D-mean(d$density))/sd(d$density)  #standardise D as in the model
+big<-rep(c(1,1,2,2), nreps)
+P<-rep(rep(2, 4), nreps) #all predators
+#Generate tank intercepts for our simulated tanks (200 values each) based on the sigma values from the model
+post<-extract.samples(m6.3)
+aT<-replicate(length(D), rnorm(2000, 0, post$sigma)) #2000 samples for each of our 100 tanks
+#Now simulate predicted distribution of survival for each tank under predation
+P1<-sapply(1:length(D),
+           function(i)
+           inv_logit(
+             aT[,i] + 
+             post$b[,P[i], big[i]] +
+             post$bD[,P[i]]*D_log[i]))
+
+#Next change predation (P) to all 1s (ie. no predators)
+P<- rep(rep(1, 4), nreps)
+#And simulated predicted distribution of survival for each tank without predation
+P2<-sapply(1:length(D),
+           function(i)
+             inv_logit(aT[,i] +
+             post$b[,P[i], big[i]] +
+             post$bD[,P[i]]*D_log[i]))
+
+#find the difference that removing predators makes by subtracting P2 from P1
+P3<-P2-P1
+
+#plot predicted survival with and without predation
+Ps<-list(P1, P2, P3)
+mains <- c("survival with predation", "survival without predation", "effect of removing predators")
+xlabs<-c("survival prob", "survival prob", "change in survival prob")
+for(i in 1:3) dens(Ps[[i]], main = mains[i], xlab = xlabs[i], ylab = "density")
+
+```
+
+"The intervention (*removing predators*) helps a lot, but because the survival varies so much under status
+quo (*with predation*), the causal effect ranges from almost nothing to at most 80%."
